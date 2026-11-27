@@ -39,7 +39,8 @@ name, data, code, documents) in this repo; it is public.
                           cutouts, target, gun params. `window_half_m=0.2` for speed,
                           `None` = exact full grid.
 - `tests/test_core.py`, `tests/test_torch_sim.py`  Run as `python tests\<file>.py`
-                          (pytest not installed). torch tests compare against NumPy.
+                          or all at once with `python -m pytest -q` (pytest is in py310).
+                          torch tests compare against NumPy.
 - `scripts/demo.py`, `scripts/bench_torch.py`
 
 ## Ground rules
@@ -53,14 +54,15 @@ name, data, code, documents) in this repo; it is public.
 ## Status
 - Phase 1 done and verified on this laptop (tests pass; demo coverage 0.98 flat/curved,
   0.87 door with window).
-- Phase 2a written: `torch_sim.py` was only checked against a NumPy stand-in for
-  torch, never real PyTorch. First task: run `python tests\test_torch_sim.py` and
-  `python scripts\bench_torch.py`, fix anything that fails, and check
-  `torch.cuda.is_available()` (if False, the conda torch is CPU-only).
+- Phase 2a done and verified on this laptop with real PyTorch (2.11.0+cu128):
+  `torch.cuda.is_available()` is True on the RTX 3050, all 7 torch tests pass
+  including GPU-vs-CPU, no code changes were needed. Benchmark at 1024 envs:
+  ~33k env-steps/s window mode, ~10k full grid (full table in README).
+- Next: Phase 2b (Isaac Lab task wrapper, on cloud GPUs).
 
 ## Roadmap
 1. Phase 1: paint physics, planner, metrics, validation (NumPy). Done.
-2. Phase 2: Isaac Lab env (cloud). 2a batched torch paint sim (done, needs real run);
+2. Phase 2: Isaac Lab env (cloud). 2a batched torch paint sim (done, verified on GPU);
    2b Isaac Lab task wrapper: 7-joint arm, 8 panel configs as USD, RGB+depth cameras,
    domain randomization (reflectivity, lighting, arm reflection, depth noise, gun params).
 3. Phase 3: demo generation at scale: planner + cuRobo IK in parallel envs, validation
