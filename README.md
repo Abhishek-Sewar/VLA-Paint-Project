@@ -10,8 +10,8 @@ laptop (CPU only, no Isaac Sim needed) and everything later builds on it.
 | `paintbot/planner.py` | Raster coverage planner, the scripted expert that generates demos |
 | `paintbot/metrics.py` | Coverage, in-spec, pooling, uniformity, overspray, glass contamination |
 | `paintbot/validation.py` | The original 4 data-quality checks, ported and fixed |
-
 | `paintbot/torch_sim.py` | Batched PyTorch version of the paint model (Phase 2a), CPU or GPU |
+| `paintbot/mujoco_cell/` | MuJoCo cell: Franka Panda paints the panel, coat shown live (Phase 2b-local) |
 
 ## Setup
 
@@ -108,6 +108,57 @@ time" is env-steps/s divided by the 30 Hz control rate.
 Window mode keeps scaling with env count; full grid levels off around 10k env-steps/s
 from 64 envs on. Below 64 envs window mode is slower than full grid, likely because
 its extra per-step kernel launches dominate when there is little work per launch.
+
+## Phase 2b-local: MuJoCo painting cell
+
+A Franka Panda (from [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie))
+with a spray gun follows the `RasterPlanner` trajectory using inverse kinematics.
+`BatchedPaintSim` paints from the gun's *measured* pose, and the film shows live as
+a texture on the panel. It runs on a laptop; Isaac Lab (Phase 2b proper) comes later.
+
+```bat
+pip install -e ".[mujoco]"
+:: Franka Panda model, ~37 MB, pinned commit, into third_party\ (gitignored)
+python scripts\fetch_menagerie.py
+
+python scripts\mujoco_paint.py --panel curved
+python scripts\mujoco_paint.py --panel door --region "upper right" --speed 2
+:: No window, just metrics + validation
+python scripts\mujoco_paint.py --panel door --headless
+python tests\test_mujoco_cell.py
+```
+
+Two modes: `--mode dynamic` (default) drives the Panda's position actuators, so
+tracking lag shows up in the paint; `--mode kinematic` sets joint angles directly
+and matches a robot-free `BatchedPaintSim` run to ~1e-5.
+
+**Cell layout**, and why:
+
+- **Panda on a ±0.8 m linear rail** (an 8th axis, as in real paint cells). A
+  fixed-base Panda reaches only the middle 60% of the 1.0 m curved door: near its
+  edges the surface normal turns ~45° and pushes the wrist ~0.8 m sideways.
+- **Rail on a 0.3 m pedestal.** The gun hangs under the wrist, so from floor level
+  the curved door's top corners were at the limit of the arm's reach.
+- **Gun at 90° to the flange**, like a real spray gun. In line with the flange,
+  spraying horizontally drove joint 6 into its limit.
+- **IK** (`ik.py`) keeps nozzle position and spray axis exact, prefers "flange
+  down" (so yawing the spray is joint 7), then a comfortable posture with the rail
+  under the wrist. It raises if the joint path would jump.
+
+Measured (dynamic mode, spray on):
+
+| Panel | coverage (cell / no robot) | max / mean tracking error | validation |
+|---|---|---|---|
+| Flat | 0.982 / 0.982 | 4.7 mm / 0.9 mm, 0.2° | pass |
+| Door with window | 0.870 / 0.869 | 4.7 mm / 0.9 mm, 0.2° | pass |
+| Curved door | 0.982 / 0.982 | 6.0 mm / 1.4 mm, 0.5° | pass |
+
+The cell reproduces the planner's limits too: door + `"upper right"` fails
+`low_coverage` (0.743, vs 0.744 with no robot) because that small region borders
+the window, where the planner switches the spray off (see Known limitations).
+
+The viewer keeps up with real time on the RTX 3050 laptop and tops out around
+2.5x (`--speed`); `--headless` runs a 50 s episode in about 6 s.
 
 ## Next step
 

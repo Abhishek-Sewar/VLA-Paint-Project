@@ -38,10 +38,29 @@ name, data, code, documents) in this repo; it is public.
 - `paintbot/torch_sim.py` Batched PyTorch version (Phase 2a). Per-env curvature,
                           cutouts, target, gun params. `window_half_m=0.2` for speed,
                           `None` = exact full grid.
-- `tests/test_core.py`, `tests/test_torch_sim.py`  Run as `python tests\<file>.py`
-                          or all at once with `python -m pytest -q` (pytest is in py310).
-                          torch tests compare against NumPy.
-- `scripts/demo.py`, `scripts/bench_torch.py`
+- `paintbot/mujoco_cell/` MuJoCo cell (Phase 2b-local). Only module that imports mujoco.
+    - `scene.py`   MjSpec build: Menagerie Panda (`panda_nohand.xml`) on a ±0.8 m y-rail
+                   atop a 0.3 m pedestal, gun at 90° to the flange (nozzle site +z =
+                   spray axis), panel = textured mesh from `Panel.surface()` + back face +
+                   convex collision slab. `PanelPose`: panel u→−y, v→+z, normal→−x,
+                   centre (0.70, 0, 0.55). 30 Hz control, 20 physics substeps.
+    - `ik.py`      Task-priority DLS IK: nozzle pos + spray axis (primary), "flange
+                   down" roll (secondary), posture with rail under wrist (tertiary),
+                   active-set joint limits. `solve_trajectory` raises on joint jumps.
+    - `cell.py`    `PaintCell(panel, target, mode="dynamic"|"kinematic")`: plan → IK →
+                   approach from park pose → per tick move arm, paint with
+                   `BatchedPaintSim` from the *measured* nozzle pose, log for
+                   `validate_episode`. Dynamic mode uses velocity feedforward.
+    - `texture.py` thickness → RGB (row 0 = panel bottom), writes `model.tex_data`.
+    - `assets.py`  Menagerie path (`third_party/mujoco_menagerie`, gitignored, pinned
+                   commit; override with `PAINTBOT_MENAGERIE`).
+- `tests/test_core.py`, `tests/test_torch_sim.py`, `tests/test_mujoco_cell.py`
+                          Run as `python tests\<file>.py` or all at once with
+                          `python -m pytest -q` (pytest is in py310; ~2 min total).
+                          torch tests compare against NumPy; mujoco tests compare against
+                          a direct BatchedPaintSim run and skip if mujoco/assets missing.
+- `scripts/demo.py`, `scripts/bench_torch.py`, `scripts/mujoco_paint.py` (live viewer,
+  `--headless` for metrics), `scripts/fetch_menagerie.py`
 
 ## Ground rules
 - `spray.py` (NumPy) is the reference. Any change to the physics goes there first,
@@ -58,11 +77,19 @@ name, data, code, documents) in this repo; it is public.
   `torch.cuda.is_available()` is True on the RTX 3050, all 7 torch tests pass
   including GPU-vs-CPU, no code changes were needed. Benchmark at 1024 envs:
   ~33k env-steps/s window mode, ~10k full grid (full table in README).
+- Phase 2b-local (MuJoCo cell) done on this laptop with mujoco 3.17.0: all 9 cell
+  tests pass. Kinematic mode matches a direct BatchedPaintSim run to ~1e-5; dynamic
+  mode tracks within 6 mm max / 1.4 mm mean while spraying, same coverage, no
+  collisions, validation passes on flat, door and curved. Layout lessons: a fixed
+  Panda can't reach the curved door's edges (hence the rail), an in-line gun drove
+  joint 6 into its limit (hence the 90° gun), and the Panda's own `home` pose puts
+  the gun inside the panel (hence the park pose).
 - Next: Phase 2b (Isaac Lab task wrapper, on cloud GPUs).
 
 ## Roadmap
 1. Phase 1: paint physics, planner, metrics, validation (NumPy). Done.
 2. Phase 2: Isaac Lab env (cloud). 2a batched torch paint sim (done, verified on GPU);
+   2b-local MuJoCo cell with Panda + rail + IK + live texture (done);
    2b Isaac Lab task wrapper: 7-joint arm, 8 panel configs as USD, RGB+depth cameras,
    domain randomization (reflectivity, lighting, arm reflection, depth noise, gun params).
 3. Phase 3: demo generation at scale: planner + cuRobo IK in parallel envs, validation
