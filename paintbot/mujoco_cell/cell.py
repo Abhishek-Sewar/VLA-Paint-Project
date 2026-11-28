@@ -53,19 +53,23 @@ class PaintCell:
     def __init__(self, panel: Panel, target_mask: np.ndarray | None = None,
                  mode: str = "dynamic", target_um: float = 50.0,
                  gun: SprayGun | None = None, pose: PanelPose | None = None,
-                 dtype: torch.dtype = torch.float32, device: str = "cpu"):
+                 dtype: torch.dtype = torch.float32, device: str = "cpu",
+                 robot: str = "panda"):
         if mode not in ("dynamic", "kinematic"):
             raise ValueError("mode must be 'dynamic' or 'kinematic'")
         self.panel, self.mode, self.target_um = panel, mode, float(target_um)
         self.gun = gun or SprayGun()
         self.target = panel.region_mask("full") if target_mask is None else target_mask
 
-        self.model, self.pose = build_scene(panel, pose)
+        self.model, self.pose, self.robot = build_scene(panel, pose, robot)
         self.data = mujoco.MjData(self.model)
         self.site = self.model.site(NOZZLE_SITE).id
         self.tex_id = self.model.texture(PANEL_TEX).id
         self.panel_geom = self.model.geom(PANEL_COLLISION).id
-        self.ik = NozzleIK(self.model)
+        home = np.asarray(self.robot.home, float)
+        if self.robot.rail:
+            home = np.concatenate([[0.0], home])           # rail joint comes first
+        self.ik = NozzleIK(self.model, home=home)
 
         self.traj: Trajectory = RasterPlanner(self.gun, target_thickness=self.target_um).plan(
             panel, self.target)

@@ -1,7 +1,7 @@
-"""Watch the Panda paint a panel in the MuJoCo viewer, with the coat shown live.
+"""Watch a robot paint a panel in the MuJoCo viewer, with the coat shown live.
 
-    python scripts/mujoco_paint.py                       # flat panel, full region
-    python scripts/mujoco_paint.py --panel curved
+    python scripts/mujoco_paint.py                       # Panda, flat panel, full region
+    python scripts/mujoco_paint.py --robot crx10ia_l --panel curved   # FANUC CRX-10iA/L
     python scripts/mujoco_paint.py --panel door --region "upper right" --speed 2
     python scripts/mujoco_paint.py --panel door --headless   # metrics only, no window
 
@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from paintbot import Panel  # noqa: E402
 from paintbot.mujoco_cell import PaintCell  # noqa: E402
+from paintbot.mujoco_cell.robots import ROBOTS  # noqa: E402
 from paintbot.mujoco_cell.scene import CONTROL_HZ  # noqa: E402
 
 DOOR_WINDOW = (-0.35, 0.08, 0.35, 0.26)
@@ -71,6 +72,7 @@ def spray_cone(viewer, cell: PaintCell, rgba=(1.0, 0.75, 0.3, 0.35), n=12):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--robot", choices=sorted(ROBOTS), default="panda")
     ap.add_argument("--panel", choices=["flat", "door", "curved"], default="flat")
     ap.add_argument("--region", default="full", help='e.g. "upper right"')
     ap.add_argument("--mode", choices=["dynamic", "kinematic"], default="dynamic")
@@ -79,8 +81,8 @@ def main():
     args = ap.parse_args()
 
     panel = make_panel(args.panel)
-    cell = PaintCell(panel, panel.region_mask(args.region), mode=args.mode)
-    print(f"{args.panel} panel, region '{args.region}', {args.mode} mode: "
+    cell = PaintCell(panel, panel.region_mask(args.region), mode=args.mode, robot=args.robot)
+    print(f"{args.robot}, {args.panel} panel, region '{args.region}', {args.mode} mode: "
           f"{len(cell)} ticks ({len(cell) / CONTROL_HZ:.1f} s)")
 
     if args.headless:
@@ -91,8 +93,8 @@ def main():
 
     import mujoco.viewer
     with mujoco.viewer.launch_passive(cell.model, cell.data) as viewer:
-        viewer.cam.lookat[:] = [0.45, 0.0, 0.55]
-        viewer.cam.distance, viewer.cam.azimuth, viewer.cam.elevation = 2.4, -145, -18
+        viewer.cam.lookat[:] = [0.5 * cell.pose.center[0], 0.0, cell.pose.center[2]]
+        viewer.cam.distance, viewer.cam.azimuth, viewer.cam.elevation = 2.6, 35, -18
         viewer.update_texture(cell.tex_id)
         t0 = time.perf_counter()
         period = 1.0 / (CONTROL_HZ * args.speed)

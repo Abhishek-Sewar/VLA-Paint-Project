@@ -1,7 +1,8 @@
-"""Checks the MuJoCo painting cell (Panda on a rail + spray gun + panel).
+"""Checks the MuJoCo painting cell (robot arm on a rail + spray gun + panel).
 
     python tests/test_mujoco_cell.py      # or: python -m pytest -q
-Skips if mujoco or the Menagerie Panda (python scripts/fetch_menagerie.py) is missing.
+Runs every robot check on the Franka Panda and, if fetched, the FANUC CRX-10iA/L
+(python scripts/fetch_menagerie.py --all). Skips if mujoco or the Panda is missing.
 """
 import functools
 import os
@@ -42,6 +43,9 @@ from paintbot.mujoco_cell.texture import BARE, GLASS, thickness_rgb, write_textu
 from paintbot.torch_sim import BatchedPaintSim  # noqa: E402
 
 DOOR_WINDOW = (-0.35, 0.08, 0.35, 0.26)
+ROBOTS = ["panda"] + (["crx10ia_l"] if assets.available("crx10ia_l") else [])
+if len(ROBOTS) == 1:  # pragma: no cover
+    print("   (FANUC CRX not fetched; testing the Panda only)")
 
 
 def _panel(kind):
@@ -54,9 +58,15 @@ def _panel(kind):
 
 
 @functools.lru_cache(maxsize=None)
-def _finished_cell(kind, mode, region="full"):
+def _finished_cell(kind, mode, robot="panda", region="full"):
     p = _panel(kind)
-    return PaintCell(p, p.region_mask(region), mode=mode, dtype=torch.float64).run()
+    return PaintCell(p, p.region_mask(region), mode=mode, dtype=torch.float64,
+                     robot=robot).run()
+
+
+def _ik(m, cfg):
+    home = np.asarray(cfg.home, float)
+    return NozzleIK(m, home=np.concatenate([[0.0], home]) if cfg.rail else home)
 
 
 def _direct_sim(cell):
@@ -79,7 +89,7 @@ def test_core_does_not_import_mujoco():
 def test_panel_mesh_matches_panel_geometry():
     for kind in ("flat", "door", "curved"):
         p = _panel(kind)
-        m, pose = build_scene(p)
+        m, pose, _ = build_scene(p)
         d = mujoco.MjData(m)
         mujoco.mj_forward(m, d)
         g = m.geom(PANEL_GEOM).id
@@ -102,71 +112,75 @@ def test_panel_mesh_matches_panel_geometry():
 
 
 def test_panel_faces_robot_and_nozzle_axis_is_spray_direction():
-    p = Panel()
-    m, pose = build_scene(p)
-    assert np.allclose(pose.dir_to_world([0, 0, 1]), [-1, 0, 0])   # normal faces robot
-    assert np.allclose(pose.dir_to_world([1, 0, 0]), [0, -1, 0])   # +u = robot's right
-    assert np.allclose(pose.to_panel(pose.to_world([0.1, -0.2, 0.3])), [0.1, -0.2, 0.3])
-    d = mujoco.MjData(m)
-    mujoco.mj_forward(m, d)
-    s = m.site(NOZZLE_SITE).id
-    z = d.site_xmat[s].reshape(3, 3)[:, 2]
-    tip = d.geom_xpos[m.geom("gun_tip").id]
-    barrel = d.geom_xpos[m.geom("gun_barrel").id]
-    nozzle = d.site_xpos[s]
-    # barrel -> tip -> nozzle all lie along the nozzle's +z axis, in that order
-    for a, b in ((barrel, tip), (tip, nozzle)):
-        u = (b - a) / np.linalg.norm(b - a)
-        assert u @ z > 0.999
+    for robot in ROBOTS:
+        p = Panel()
+        m, pose, _ = build_scene(p, robot=robot)
+        assert np.allclose(pose.dir_to_world([0, 0, 1]), [-1, 0, 0])   # normal faces robot
+        assert np.allclose(pose.dir_to_world([1, 0, 0]), [0, -1, 0])   # +u = robot's right
+        assert np.allclose(pose.to_panel(pose.to_world([0.1, -0.2, 0.3])), [0.1, -0.2, 0.3])
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        s = m.site(NOZZLE_SITE).id
+        z = d.site_xmat[s].reshape(3, 3)[:, 2]
+        tip = d.geom_xpos[m.geom("gun_tip").id]
+        barrel = d.geom_xpos[m.geom("gun_barrel").id]
+        nozzle = d.site_xpos[s]
+        # barrel -> tip -> nozzle all lie along the nozzle's +z axis, in that order
+        for a, b in ((barrel, tip), (tip, nozzle)):
+            u = (b - a) / np.linalg.norm(b - a)
+            assert u @ z > 0.999, robot
 
 
 def test_ik_reaches_centre_and_corners():
-    for kind in ("flat", "curved"):
-        p = _panel(kind)
-        m, pose = build_scene(p)
-        ik = NozzleIK(m)
-        for u, v in [(0, 0), (-.5, .3), (.5, .3), (-.5, -.3), (.5, -.3)]:
-            P, N = p.surface(np.array(u), np.array(v))
-            tgt = pose.to_world(np.asarray(P) + 0.25 * np.asarray(N))
-            q, pe, ae = ik.solve(tgt, pose.dir_to_world(-np.asarray(N)))
-            assert pe < 1e-3 and ae < np.radians(0.5), (kind, u, v, pe, ae)
-            assert np.all(q >= m.jnt_range[:, 0] - 1e-9) and np.all(q <= m.jnt_range[:, 1] + 1e-9)
+    for robot in ROBOTS:
+        for kind in ("flat", "curved"):
+            p = _panel(kind)
+            m, pose, cfg = build_scene(p, robot=robot)
+            ik = _ik(m, cfg)
+            for u, v in [(0, 0), (-.5, .3), (.5, .3), (-.5, -.3), (.5, -.3)]:
+                P, N = p.surface(np.array(u), np.array(v))
+                tgt = pose.to_world(np.asarray(P) + 0.25 * np.asarray(N))
+                q, pe, ae = ik.solve(tgt, pose.dir_to_world(-np.asarray(N)))
+                assert pe < 1e-3 and ae < np.radians(0.5), (robot, kind, u, v, pe, ae)
+                assert np.all(q >= m.jnt_range[:, 0] - 1e-9) and np.all(q <= m.jnt_range[:, 1] + 1e-9)
 
 
 def test_full_trajectories_reachable_and_continuous():
     # PaintCell raises if IK would jump; also check the solved path is exact
-    for kind, region in (("flat", "full"), ("door", "full"), ("curved", "full"),
-                         ("flat", "upper right")):
-        p = _panel(kind)
-        cell = PaintCell(p, p.region_mask(region), mode="kinematic")
-        S = cell.schedule
-        assert S.ik_pos_err.max() < 1e-4 and S.ik_ang_err.max() < 1e-3, (kind, region)
-        assert np.abs(np.diff(S.q, axis=0)).max() < 0.1, (kind, region)
+    for robot in ROBOTS:
+        for kind, region in (("flat", "full"), ("door", "full"), ("curved", "full"),
+                             ("flat", "upper right")):
+            p = _panel(kind)
+            cell = PaintCell(p, p.region_mask(region), mode="kinematic", robot=robot)
+            S = cell.schedule
+            assert S.ik_pos_err.max() < 1e-4 and S.ik_ang_err.max() < 1e-3, (robot, kind, region)
+            assert np.abs(np.diff(S.q, axis=0)).max() < 0.1, (robot, kind, region)
 
 
 def test_kinematic_matches_direct_sim():
-    for kind in ("flat", "curved"):
-        cell = _finished_cell(kind, "kinematic")
+    for robot, kind in [(r, k) for r in ROBOTS for k in ("flat", "curved")]:
+        cell = _finished_cell(kind, "kinematic", robot)
         ref = _direct_sim(cell)
         th, rth = cell.thickness, ref.thickness[0].numpy()
-        assert np.abs(th - rth).max() / rth.max() < 1e-3, kind
+        assert np.abs(th - rth).max() / rth.max() < 1e-3, (robot, kind)
         m, r = ref.metrics(50.0), cell.report()
         for key in ("coverage", "in_spec", "uniformity_cv", "transfer_efficiency"):
-            assert abs(m[key][0].item() - r[key]) < 1e-3, (kind, key)
+            assert abs(m[key][0].item() - r[key]) < 1e-3, (robot, kind, key)
 
 
 def test_dynamic_tracks_paints_and_validates():
-    for kind in ("flat", "door", "curved"):
-        cell = _finished_cell(kind, "dynamic")
+    for robot, kind in [(r, k) for r in ROBOTS for k in ("flat", "door", "curved")]:
+        cell = _finished_cell(kind, "dynamic", robot)
         ts = cell.tracking_stats()
-        # measured on this setup: max 4.7-6.0 mm, mean 0.9-1.4 mm, max 0.2-0.5 deg
-        assert ts["max_pos_err_mm"] < 10.0 and ts["mean_pos_err_mm"] < 2.5, (kind, ts)
-        assert ts["max_ang_err_deg"] < 1.0, (kind, ts)
+        # measured: Panda max 4.7-6.0 mm / mean 0.9-1.4 mm / 0.2-0.5 deg,
+        #           CRX   max 5.5-8.6 mm / mean 0.9-1.6 mm / 0.1-0.5 deg
+        assert ts["max_pos_err_mm"] < 10.0 and ts["mean_pos_err_mm"] < 2.5, (robot, kind, ts)
+        assert ts["max_ang_err_deg"] < 1.0, (robot, kind, ts)
         ref_cov = _direct_sim(cell).metrics(50.0)["coverage"][0].item()
-        assert abs(cell.report()["coverage"] - ref_cov) < 0.02, kind
-        assert not cell.log["collision"].any(), kind
+        assert abs(cell.report()["coverage"] - ref_cov) < 0.02, (robot, kind)
+        assert not cell.log["collision"].any(), (robot, kind)
         res = cell.validate()
-        assert res.passed, (kind, res.reasons, res.stats)
+        assert res.passed, (robot, kind, res.reasons, res.stats)
 
 
 def test_texture_colours_and_layout():

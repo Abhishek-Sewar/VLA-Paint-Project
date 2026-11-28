@@ -44,7 +44,7 @@ def nozzle_frame(d) -> np.ndarray:
 
 
 class NozzleIK:
-    def __init__(self, model: mujoco.MjModel, damping: float = 1e-3,
+    def __init__(self, model: mujoco.MjModel, home=None, damping: float = 1e-3,
                  posture_gain: float = 0.1, max_iters: int = 200, min_iters: int = 3,
                  pos_tol: float = 1e-5, ang_tol: float = 1e-4):
         self.m = model
@@ -53,7 +53,9 @@ class NozzleIK:
         self.nv = model.nv
         self.lo = model.jnt_range[:, 0].copy()
         self.hi = model.jnt_range[:, 1].copy()
-        self.ref = model.key("home").qpos.copy()   # preferred posture (see set_posture)
+        if home is None:
+            home = model.key("home").qpos if model.nkey else np.zeros(model.nq)
+        self.ref = np.asarray(home, float).copy()  # preferred posture (see set_posture)
         self.lam2 = damping ** 2
         self.k_null = posture_gain
         self.max_iters, self.pos_tol, self.ang_tol = max_iters, pos_tol, ang_tol

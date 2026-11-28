@@ -8,11 +8,13 @@ dependencies = ["numpy>=1.26", "matplotlib>=3.8"]
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 torch = ["torch>=2.1"]
-mujoco = ["mujoco>=3.2", "torch>=2.1"]
+mujoco = ["mujoco>=3.2", "torch>=2.1", "xacro>=2.0"]
+# builds the Isaac Sim inputs (robot URDF, expert trajectories, panel USD); not for the Isaac env itself
+isaac-prep = ["mujoco>=3.2", "torch>=2.1", "xacro>=2.0", "usd-core>=24.0"]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["paintbot", "paintbot.mujoco_cell"]
+packages = ["paintbot", "paintbot.mujoco_cell", "paintbot.isaac_task"]

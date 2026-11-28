@@ -1,35 +1,22 @@
-"""Build the MuJoCo painting cell: Franka Panda + spray gun in front of a panel.
+"""Build the MuJoCo painting cell: a robot arm + spray gun in front of a panel.
 
-World frame: z up, Panda base at the origin, robot faces +x.
-The panel stands vertically in front of the robot like a car door. Panel
-coordinates (see panel.py) map to world as
-
-    u (across)      -> -y   (so +u is on the robot's right, as panel.py describes)
-    v (up)          -> +z
-    panel normal +z -> -x   (faces the robot)
-
-`PanelPose` does that mapping, so the planner, BatchedPaintSim and metrics keep
-working in panel coordinates and only this package knows about the world.
+The layout (robot mount, rail, panel pose, gun geometry, panel-to-world mapping)
+comes from paintbot/cell_layout.py, shared with the Isaac Sim task. The planner,
+BatchedPaintSim and metrics keep working in panel coordinates; `PanelPose` maps
+them to the world.
 """
 from __future__ import annotations
-
-from dataclasses import dataclass, field
 
 import mujoco
 import numpy as np
 
+from ..cell_layout import GUN_HEIGHT, GUN_REACH, PanelPose  # noqa: F401  (PanelPose re-exported)
 from ..panel import Panel
-from . import assets
-
-# columns are the panel u, v, n axes expressed in world coordinates
-_R_WORLD_PANEL = np.array([[0.0, 0.0, -1.0],
-                           [-1.0, 0.0, 0.0],
-                           [0.0, 1.0, 0.0]])
+from . import robots
+from .robots import RobotConfig
 
 CONTROL_HZ = 30.0
 SUBSTEPS = 20                      # physics steps per control tick
-GUN_HEIGHT = 0.06                  # barrel axis, out from the flange (flange +z)
-GUN_REACH = 0.15                   # nozzle tip, sideways from the flange axis (flange -y)
 
 PANEL_TEX = "paint_tex"
 PANEL_GEOM = "panel_surface"
@@ -37,31 +24,6 @@ PANEL_COLLISION = "panel_collision"
 NOZZLE_SITE = "nozzle"
 # gun geoms use collision bit 2: they touch the panel (bits 1|2) but not the arm (bit 1)
 _GUN_COL = dict(contype=2, conaffinity=2)
-
-
-@dataclass
-class PanelPose:
-    """Rigid transform panel frame -> world frame (panel centre at `center`)."""
-    center: np.ndarray = field(default_factory=lambda: np.array([0.70, 0.0, 0.55]))
-    R: np.ndarray = field(default_factory=lambda: _R_WORLD_PANEL.copy())
-
-    def to_world(self, p):
-        return np.asarray(p, dtype=float) @ self.R.T + self.center
-
-    def dir_to_world(self, d):
-        return np.asarray(d, dtype=float) @ self.R.T
-
-    def to_panel(self, p):
-        return (np.asarray(p, dtype=float) - self.center) @ self.R
-
-    def dir_to_panel(self, d):
-        return np.asarray(d, dtype=float) @ self.R
-
-    @property
-    def quat(self) -> np.ndarray:
-        q = np.zeros(4)
-        mujoco.mju_mat2Quat(q, self.R.reshape(-1))
-        return q
 
 
 def _panel_uv_grid(panel: Panel, step: int = 4):
@@ -103,58 +65,79 @@ def _panel_slab(panel: Panel, thickness: float = 0.01):
     return np.concatenate([front, back])
 
 
-RAIL_RANGE = 0.8          # carriage travel, +- metres along y
-PEDESTAL = 0.3            # rail top height. The gun hangs ~0.17 m below the wrist,
-                          # so from floor level the curved door's top corners were
-                          # at the limit of the Panda's reach
+ARM_PREFIX = "arm/"
 
 
-def _with_rail(xml: str) -> str:
-    """Put the Panda on a carriage that slides along world y (a 7th-axis rail)."""
-    head = '<body name="link0" childclass="panda">'
-    assert head in xml and xml.count("</worldbody>") == 1
-    xml = xml.replace(head, (
-        f'<body name="rail_carriage" pos="0 0 {PEDESTAL}">'
-        f'<joint name="rail" type="slide" axis="0 1 0" range="-{RAIL_RANGE} {RAIL_RANGE}"'
-        ' damping="50" armature="1"/>'
-        '<geom type="box" size="0.12 0.12 0.02" pos="0 0 -0.02" rgba="0.2 0.2 0.22 1"'
-        ' mass="5" contype="0" conaffinity="0"/>' + head))
-    xml = xml.replace("</worldbody>", "</body></worldbody>")
-    xml = xml.replace("<actuator>", '<actuator><position name="rail_act" joint="rail"'
-                      f' kp="20000" kv="1500" ctrlrange="-{RAIL_RANGE} {RAIL_RANGE}"/>')
-    xml = xml.replace('qpos="0 0 0', 'qpos="0 0 0 0').replace('ctrl="0 0 0', 'ctrl="0 0 0 0')
-    return xml
+def _prepare_arm(cfg: RobotConfig) -> mujoco.MjSpec:
+    """Load the arm, add servos if it has none, gravity-compensate it, and set
+    collision bits so arm links touch the panel but not each other or the gun."""
+    arm = cfg.load()
+    for b in arm.bodies:
+        b.gravcomp = 1.0
+    joints = [j for j in arm.joints]
+    if cfg.kp is not None:
+        for j, kp, kv in zip(joints, cfg.kp, cfg.kv):
+            j.armature = max(j.armature, cfg.armature)
+            a = arm.add_actuator(name=f"act_{j.name}", target=j.name,
+                                 trntype=mujoco.mjtTrn.mjTRN_JOINT)
+            a.set_to_position(kp=kp, kv=kv)
+            a.ctrlrange = j.range
+            a.ctrllimited = mujoco.mjtLimited.mjLIMITED_TRUE
+    for g in arm.geoms:
+        g.conaffinity = 0                   # no arm-arm or arm-gun contacts
+        if cfg.rgba is not None and g.contype:
+            g.rgba = cfg.rgba
+    return arm
 
 
 def build_scene(panel: Panel, pose: PanelPose | None = None,
-                rail: bool = True):
-    """Return (model, pose). The panel texture starts as bare metal.
+                robot: str | RobotConfig = "panda"):
+    """Return (model, pose, cfg). The panel texture starts as bare metal.
 
-    rail=True (default) mounts the Panda on a +-0.8 m linear rail along y. Without
-    it a fixed Panda reaches only the middle 60% of the 1.0 m curved door: near the
-    edges the surface normal turns ~43 deg and pushes the wrist ~0.8 m sideways.
+    The robot sits on a fixed pedestal, or on a linear rail along world y if its
+    config says so (see robots.py for why the Panda needs one and the CRX not).
     """
-    pose = pose or PanelPose()
-    xml_path = assets.panda_xml()
-    if rail:
-        spec = mujoco.MjSpec.from_string(_with_rail(xml_path.read_text()))
-        spec.meshdir = str(xml_path.parent / "assets")
-    else:
-        spec = mujoco.MjSpec.from_file(str(xml_path))
-    spec.modelname = "paintbot_cell"
+    cfg = robots.get(robot) if isinstance(robot, str) else robot
+    pose = pose or PanelPose(center=np.array(cfg.panel_center, dtype=float))
+    spec = mujoco.MjSpec()
+    spec.modelname = f"paintbot_cell_{cfg.name}"
     spec.option.timestep = 1.0 / (CONTROL_HZ * SUBSTEPS)
+    spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+    spec.option.impratio = 10
 
-    # gravity compensation: the Panda's PD gains then track instead of sagging
-    for b in spec.bodies:
-        if b.name.startswith("link"):
-            b.gravcomp = 1.0
+    # ------------------------------------------------------------ robot mount
+    mount = spec.worldbody.add_body(name="robot_mount", pos=[0, 0, cfg.pedestal])
+    if cfg.rail:
+        r = cfg.rail_range
+        mount.add_joint(name="rail", type=mujoco.mjtJoint.mjJNT_SLIDE, axis=[0, 1, 0],
+                        range=[-r, r], damping=50, armature=1)
+        mount.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.12, 0.12, 0.02],
+                       pos=[0, 0, -0.02], rgba=[0.2, 0.2, 0.22, 1], mass=5,
+                       contype=0, conaffinity=0)
+        act = spec.add_actuator(name="rail_act", target="rail",
+                                trntype=mujoco.mjtTrn.mjTRN_JOINT)
+        act.set_to_position(kp=20000, kv=1500)
+        act.ctrlrange = [-r, r]
+        act.ctrllimited = mujoco.mjtLimited.mjLIMITED_TRUE
+    else:
+        mount.add_geom(type=mujoco.mjtGeom.mjGEOM_CYLINDER, size=[0.16, 0.01, 0],
+                       pos=[0, 0, -0.01], rgba=[0.2, 0.2, 0.22, 1], mass=5,
+                       contype=0, conaffinity=0)
+    spec.attach(_prepare_arm(cfg), frame=mount.add_frame(), prefix=ARM_PREFIX)
+    if cfg.pedestal > 0.045:                # pedestal / rail track under the mount
+        half_y = cfg.rail_range + 0.15 if cfg.rail else 0.16
+        spec.worldbody.add_geom(
+            name="pedestal", type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=[0.16 if not cfg.rail else 0.10, half_y, (cfg.pedestal - 0.04) / 2],
+            pos=[0, 0, (cfg.pedestal - 0.04) / 2], rgba=[0.35, 0.36, 0.38, 1],
+            contype=0, conaffinity=0, group=1)
 
     # ---------------------------------------------------------------- spray gun
     # Flange coordinates: +z points out of the flange. The barrel points along
     # flange -y, at 90 deg to the flange like a real spray gun, so the wrist can
-    # stay near its flange-down `home` posture while spraying horizontally (a gun
-    # in line with the flange drove joint 6 into its limit).
-    flange = spec.body("attachment")
+    # stay near a flange-down posture while spraying horizontally (on the Panda, a
+    # gun in line with the flange drove joint 6 into its limit).
+    flange = spec.body(ARM_PREFIX + cfg.flange_body)
     gun = flange.add_body(name="spray_gun", gravcomp=1.0)
     grey = [0.25, 0.25, 0.28, 1]
     rx90 = [np.cos(np.pi / 4), np.sin(np.pi / 4), 0, 0]     # local z -> flange -y
@@ -228,13 +211,6 @@ def build_scene(panel: Panel, pose: PanelPose | None = None,
             pos=[foot[0], foot[1], foot[2] / 2], rgba=[0.3, 0.3, 0.3, 1],
             contype=0, conaffinity=0, group=1)
 
-    if rail:   # the rail beam the carriage runs on
-        spec.worldbody.add_geom(
-            name="rail_beam", type=mujoco.mjtGeom.mjGEOM_BOX,
-            size=[0.10, RAIL_RANGE + 0.15, (PEDESTAL - 0.04) / 2],
-            pos=[0, 0, (PEDESTAL - 0.04) / 2], rgba=[0.35, 0.36, 0.38, 1],
-            contype=0, conaffinity=0, group=1)
-
     # ------------------------------------------------------------- environment
     spec.add_texture(name="floor_tex", type=mujoco.mjtTexture.mjTEXTURE_2D,
                      builtin=mujoco.mjtBuiltin.mjBUILTIN_CHECKER, width=256, height=256,
@@ -248,12 +224,12 @@ def build_scene(panel: Panel, pose: PanelPose | None = None,
                              diffuse=[0.7, 0.7, 0.7])
     spec.worldbody.add_light(name="fill", pos=[-0.8, -1.0, 2.0], dir=[0.5, 0.5, -1.0],
                              diffuse=[0.35, 0.35, 0.35])
-    spec.worldbody.add_camera(name="overview", pos=[-0.9, -1.1, 1.25],
+    spec.worldbody.add_camera(name="overview", pos=[-1.0, -1.6, 1.6],
                               xyaxes=[0.77, -0.64, 0, 0.25, 0.30, 0.92])
-    spec.worldbody.add_camera(name="panel_view", pos=[-0.55, 0.0, 0.55],
+    spec.worldbody.add_camera(name="panel_view", pos=(pose.center + [-1.25, 0.0, 0.0]).tolist(),
                               xyaxes=[0, -1, 0, 0.1, 0, 1])
     spec.visual.global_.offwidth = 1280
     spec.visual.global_.offheight = 720
 
     model = spec.compile()
-    return model, pose
+    return model, pose, cfg

@@ -14,12 +14,17 @@ name, data, code, documents) in this repo; it is public.
 
 ## Hardware and environment
 - Windows 11 laptop, RTX 3050 (4–6 GB VRAM), ~44 GB free disk.
-- Conda env `py310` (Python 3.10.13) with numpy, matplotlib, pytorch.
+- Conda env `py310` (Python 3.10.13) with numpy, matplotlib, pytorch, mujoco 3.17.0,
+  xacro, usd-core (pxr, for testing the Isaac panel USD; never install it into an Isaac env).
 - Run commands from `C:\Users\abhis\projects\paintbot` in Anaconda Prompt (cmd, not bash).
 - Isaac Sim cannot run locally (needs 16 GB VRAM, RT cores). Isaac work happens on
   rented cloud GPUs with RT cores (L40S / RTX 4090-class), never A100/H100 for Isaac.
   Policy training can use A100/H100. Don't install Isaac Sim, CUDA toolkits, or large
   datasets locally.
+- Cloud for Isaac: AWS g6e (L40S) via NVIDIA's Isaac Automator, viewed by noVNC/NoMachine
+  remote desktop. Isaac Lab 3.0 on Isaac Sim 6.2, Python 3.12 (`scripts/isaac/README.md`).
+  3.0 changed many APIs vs 2.x (launcher, `--headless` gone, `--viz kit`, data as
+  ProxyArray `.torch`, quaternions x,y,z,w, `VideoRecorderCfg`); check the 3.0 docs.
 - Repo: https://github.com/Abhishek-Sewar/VLA-Paint-Project (branch `main`).
 
 ## Code layout
@@ -38,12 +43,22 @@ name, data, code, documents) in this repo; it is public.
 - `paintbot/torch_sim.py` Batched PyTorch version (Phase 2a). Per-env curvature,
                           cutouts, target, gun params. `window_half_m=0.2` for speed,
                           `None` = exact full grid.
-- `paintbot/mujoco_cell/` MuJoCo cell (Phase 2b-local). Only module that imports mujoco.
-    - `scene.py`   MjSpec build: Menagerie Panda (`panda_nohand.xml`) on a ±0.8 m y-rail
-                   atop a 0.3 m pedestal, gun at 90° to the flange (nozzle site +z =
-                   spray axis), panel = textured mesh from `Panel.surface()` + back face +
-                   convex collision slab. `PanelPose`: panel u→−y, v→+z, normal→−x,
-                   centre (0.70, 0, 0.55). 30 Hz control, 20 physics substeps.
+- `paintbot/cell_layout.py` Cell layout shared by MuJoCo and Isaac (NumPy only): per-robot
+                          `CellLayout` (flange link, home, rail ±range, pedestal, panel
+                          centre), gun geometry (90° to flange, nozzle 0.15 m sideways,
+                          0.06 m out), `PanelPose` (panel u→−y, v→+z, normal→−x),
+                          `make_panel("flat"|"door"|"curved")`.
+- `paintbot/paint_colors.py` thickness → RGB, shared by MuJoCo texture and Isaac colours.
+- `paintbot/mujoco_cell/` MuJoCo cell (Phase 2b-local). Only package that imports mujoco
+                          (lazily, so `assets` works without it).
+    - `robots.py`  `RobotConfig` per robot: `panda` (Menagerie, ±0.8 m rail, 0.3 m
+                   pedestal, panel (0.70, 0, 0.55)) and `crx10ia_l` (FANUC official
+                   URDF, ±0.8 m rail on a 6 cm track, panel (0.80, 0, 0.60), servo
+                   gains added since the URDF has none).
+    - `scene.py`   MjSpec build: robot attached on its mount/rail, gun on the flange
+                   (nozzle site +z = spray axis), panel = textured mesh from
+                   `Panel.surface()` + back face + convex collision slab. Arm geoms don't
+                   self-collide. 30 Hz control, 20 physics substeps.
     - `ik.py`      Task-priority DLS IK: nozzle pos + spray axis (primary), "flange
                    down" roll (secondary), posture with rail under wrist (tertiary),
                    active-set joint limits. `solve_trajectory` raises on joint jumps.
@@ -51,16 +66,28 @@ name, data, code, documents) in this repo; it is public.
                    approach from park pose → per tick move arm, paint with
                    `BatchedPaintSim` from the *measured* nozzle pose, log for
                    `validate_episode`. Dynamic mode uses velocity feedforward.
-    - `texture.py` thickness → RGB (row 0 = panel bottom), writes `model.tex_data`.
-    - `assets.py`  Menagerie path (`third_party/mujoco_menagerie`, gitignored, pinned
-                   commit; override with `PAINTBOT_MENAGERIE`).
-- `tests/test_core.py`, `tests/test_torch_sim.py`, `tests/test_mujoco_cell.py`
+    - `texture.py` writes the panel texture (row 0 = panel bottom) into `model.tex_data`.
+    - `assets.py`  Robot models, gitignored under `third_party/`, pinned commits: Menagerie
+                   Panda, and FANUC `fanuc_description` (Apache-2.0, Git LFS meshes,
+                   xacro → plain URDF cached in `build/`). Overrides `PAINTBOT_MENAGERIE`,
+                   `PAINTBOT_FANUC`.
+- `paintbot/isaac_task/` Isaac Lab 3.0 task (Phase 2b), runs on the cloud GPU.
+    - `robot_urdf.py` one URDF: rail + CRX + gun + `nozzle` link; matches the MuJoCo cell.
+    - `expert.py`  exports the MuJoCo-verified joint path (+ MuJoCo reference metrics) to
+                   .npz; Isaac plays it back, so no IK runs inside Isaac.
+    - `panel_usd.py` panel mesh USD with per-vertex `displayColor` for live paint (pxr only).
+    - `env.py`     `PaintEnv` (DirectRLEnv): plays expert or policy actions (7 joint deltas
+                   + spray), paints all envs with BatchedPaintSim on GPU. NOT YET RUN;
+                   3.0 API renames isolated in helpers at the top.
+- `tests/test_core.py`, `tests/test_torch_sim.py`, `tests/test_mujoco_cell.py`,
+  `tests/test_isaac_task.py`
                           Run as `python tests\<file>.py` or all at once with
-                          `python -m pytest -q` (pytest is in py310; ~2 min total).
-                          torch tests compare against NumPy; mujoco tests compare against
-                          a direct BatchedPaintSim run and skip if mujoco/assets missing.
+                          `python -m pytest -q` (pytest is in py310; ~4 min total).
+                          mujoco tests run on Panda and CRX; Isaac tests check the URDF,
+                          expert and USD without Isaac. Each skips what isn't installed.
 - `scripts/demo.py`, `scripts/bench_torch.py`, `scripts/mujoco_paint.py` (live viewer,
-  `--headless` for metrics), `scripts/fetch_menagerie.py`
+  `--robot`, `--headless`), `scripts/fetch_menagerie.py` (`--fanuc`, `--all`),
+  `scripts/isaac/` (`prepare_assets.py`, `run_paint.py`, README = AWS guide)
 
 ## Ground rules
 - `spray.py` (NumPy) is the reference. Any change to the physics goes there first,
@@ -84,21 +111,33 @@ name, data, code, documents) in this repo; it is public.
   Panda can't reach the curved door's edges (hence the rail), an in-line gun drove
   joint 6 into its limit (hence the 90° gun), and the Panda's own `home` pose puts
   the gun inside the panel (hence the park pose).
-- Next: Phase 2b (Isaac Lab task wrapper, on cloud GPUs).
+- FANUC CRX-10iA/L added to the MuJoCo cell and verified (same 9 tests): kinematic ~2e-5
+  vs direct sim, dynamic ≤ 8.6 mm max / 1.6 mm mean, validation passes on all panels.
+  It needs the rail too: fixed, the curved door's top corners are out of reach with the
+  gun hanging under the flange.
+- Phase 2b Isaac task written; its inputs are verified locally (robot URDF matches the
+  cell's nozzle FK to 1e-9, expert replays the planned path, panel USD), but `env.py`
+  has not run yet. Next: run it on AWS g6e and fix 3.0 API mismatches.
 
 ## Roadmap
 1. Phase 1: paint physics, planner, metrics, validation (NumPy). Done.
 2. Phase 2: Isaac Lab env (cloud). 2a batched torch paint sim (done, verified on GPU);
-   2b-local MuJoCo cell with Panda + rail + IK + live texture (done);
-   2b Isaac Lab task wrapper: 7-joint arm, 8 panel configs as USD, RGB+depth cameras,
-   domain randomization (reflectivity, lighting, arm reflection, depth noise, gun params).
+   2b-local MuJoCo cell with Panda / FANUC CRX + rail + IK + live texture (done);
+   2b Isaac Lab task: FANUC CRX-10iA/L (FANUC sells a paint variant; official URDF) on a
+   rail, scripted expert playback (written, not yet run); then 8 panel configs as USD,
+   RGB+depth cameras, domain randomization (reflectivity, lighting, arm reflection,
+   depth noise, gun params). Later: an approximate FANUC P-series paint robot (no public
+   model; build from datasheet) as a second robot.
 3. Phase 3: demo generation at scale: planner + cuRobo IK in parallel envs, validation
    on every episode, LeRobot dataset format, LLM-paraphrased instructions. Hold out
    configs 7–8 entirely.
 4. Phase 4: photoreal augmentation with Cosmos Transfer on a subset.
-5. Phase 5: policies. Baseline ACT/Diffusion Policy (LeRobot), then π0.5 LoRA via
-   openpi with action chunks + spray on/intensity as action dims. In parallel, hybrid
-   track: VLM + text-prompted segmentation picks region → planner paints it. Compare.
+5. Phase 5: policies. Baseline ACT/Diffusion Policy (LeRobot), then NVIDIA GR00T N1.6
+   (replaces π0.5; decided 2026-11-27) fine-tuned as a NEW_EMBODIMENT on the Phase 3
+   LeRobot data, with action chunks + spray on/intensity as action dims. GR00T is a full
+   VLA (its own VLM reads instruction + images), not a CLIP swap. Fine-tuning needs a big
+   rented GPU (24–80 GB class). In parallel, hybrid track: VLM + text-prompted
+   segmentation picks region → planner paints it. Compare.
 6. Phase 6: closed-loop eval harness: held-out configs, failure triggers (timeout,
    velocity freeze, low coverage at midpoint, out of bounds), failure classification.
 
