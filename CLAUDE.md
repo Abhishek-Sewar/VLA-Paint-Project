@@ -47,7 +47,8 @@ name, data, code, documents) in this repo; it is public.
                           `CellLayout` (flange link, home, rail ±range, pedestal, panel
                           centre), gun geometry (90° to flange, nozzle 0.15 m sideways,
                           0.06 m out), `PanelPose` (panel u→−y, v→+z, normal→−x),
-                          `make_panel("flat"|"door"|"curved")`.
+                          8 reference panels `PANEL_CONFIGS` (all 1.0×0.6 m; 7 `vent`
+                          and 8 `curved_twin` held out), `make_panel(name)`.
 - `paintbot/paint_colors.py` thickness → RGB, shared by MuJoCo texture and Isaac colours.
 - `paintbot/mujoco_cell/` MuJoCo cell (Phase 2b-local). Only package that imports mujoco
                           (lazily, so `assets` works without it).
@@ -82,7 +83,7 @@ name, data, code, documents) in this repo; it is public.
 - `tests/test_core.py`, `tests/test_torch_sim.py`, `tests/test_mujoco_cell.py`,
   `tests/test_isaac_task.py`
                           Run as `python tests\<file>.py` or all at once with
-                          `python -m pytest -q` (pytest is in py310; ~4 min total).
+                          `python -m pytest -q` (pytest is in py310; ~4.5 min total).
                           mujoco tests run on Panda and CRX; Isaac tests check the URDF,
                           expert and USD without Isaac. Each skips what isn't installed.
 - `scripts/demo.py`, `scripts/bench_torch.py`, `scripts/mujoco_paint.py` (live viewer,
@@ -118,14 +119,18 @@ name, data, code, documents) in this repo; it is public.
 - Phase 2b Isaac task written; its inputs are verified locally (robot URDF matches the
   cell's nozzle FK to 1e-9, expert replays the planned path, panel USD), but `env.py`
   has not run yet. Next: run it on AWS g6e and fix 3.0 API mismatches.
+- 8 panel configs defined and verified in MuJoCo on both robots: reachable, smooth IK,
+  coverage = robot-free expert within 0.002, all pass validation; Isaac assets for all
+  8 build. Expert coverage 0.848–0.982. Twin windows were resized (0.28×0.16 m, 0.30 m
+  apart) because the first layout left the expert at 0.77 < 0.8 spec.
 
 ## Roadmap
 1. Phase 1: paint physics, planner, metrics, validation (NumPy). Done.
 2. Phase 2: Isaac Lab env (cloud). 2a batched torch paint sim (done, verified on GPU);
    2b-local MuJoCo cell with Panda / FANUC CRX + rail + IK + live texture (done);
    2b Isaac Lab task: FANUC CRX-10iA/L (FANUC sells a paint variant; official URDF) on a
-   rail, scripted expert playback (written, not yet run); then 8 panel configs as USD,
-   RGB+depth cameras, domain randomization (reflectivity, lighting, arm reflection,
+   rail, scripted expert playback (written, not yet run); 8 panel configs (done, as
+   USD + experts); then RGB+depth cameras, domain randomization (reflectivity, lighting, arm reflection,
    depth noise, gun params). Later: an approximate FANUC P-series paint robot (no public
    model; build from datasheet) as a second robot.
 3. Phase 3: demo generation at scale: planner + cuRobo IK in parallel envs, validation

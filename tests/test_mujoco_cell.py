@@ -36,25 +36,20 @@ if not assets.available():  # pragma: no cover
     _skip("Menagerie Panda not fetched (python scripts/fetch_menagerie.py)")
 
 from paintbot import Panel  # noqa: E402
+from paintbot.cell_layout import PANEL_KINDS, make_panel  # noqa: E402
 from paintbot.mujoco_cell import PaintCell, build_scene  # noqa: E402
 from paintbot.mujoco_cell.ik import NozzleIK  # noqa: E402
 from paintbot.mujoco_cell.scene import NOZZLE_SITE, PANEL_GEOM  # noqa: E402
 from paintbot.mujoco_cell.texture import BARE, GLASS, thickness_rgb, write_texture  # noqa: E402
 from paintbot.torch_sim import BatchedPaintSim  # noqa: E402
 
-DOOR_WINDOW = (-0.35, 0.08, 0.35, 0.26)
 ROBOTS = ["panda"] + (["crx10ia_l"] if assets.available("crx10ia_l") else [])
 if len(ROBOTS) == 1:  # pragma: no cover
     print("   (FANUC CRX not fetched; testing the Panda only)")
 
 
 def _panel(kind):
-    if kind == "curved":
-        return Panel(curvature=1.5)
-    p = Panel()
-    if kind == "door":
-        p.add_cutout(*DOOR_WINDOW)
-    return p
+    return make_panel(kind)
 
 
 @functools.lru_cache(maxsize=None)
@@ -181,6 +176,22 @@ def test_dynamic_tracks_paints_and_validates():
         assert not cell.log["collision"].any(), (robot, kind)
         res = cell.validate()
         assert res.passed, (robot, kind, res.reasons, res.stats)
+
+
+def test_all_panel_configs():
+    """Every reference panel: the CRX (the Isaac robot) paints it in dynamic mode with
+    the same coverage as a robot-free run and passes validation; the Panda reaches it."""
+    for kind in PANEL_KINDS:
+        if "crx10ia_l" in ROBOTS:
+            cell = _finished_cell(kind, "dynamic", "crx10ia_l")
+            ts = cell.tracking_stats()
+            assert ts["max_pos_err_mm"] < 10.0 and ts["mean_pos_err_mm"] < 2.5, (kind, ts)
+            ref_cov = _direct_sim(cell).metrics(50.0)["coverage"][0].item()
+            assert abs(cell.report()["coverage"] - ref_cov) < 0.01, kind
+            res = cell.validate()
+            assert res.passed, (kind, res.reasons, res.stats)
+        S = PaintCell(_panel(kind), mode="kinematic", robot="panda").schedule
+        assert S.ik_pos_err.max() < 1e-4 and np.abs(np.diff(S.q, axis=0)).max() < 0.1, kind
 
 
 def test_texture_colours_and_layout():

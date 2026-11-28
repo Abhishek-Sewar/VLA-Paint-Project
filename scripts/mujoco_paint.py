@@ -17,21 +17,11 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from paintbot import Panel  # noqa: E402
+from paintbot.cell_layout import PANEL_KINDS, make_panel  # noqa: E402
 from paintbot.mujoco_cell import PaintCell  # noqa: E402
 from paintbot.mujoco_cell.robots import ROBOTS  # noqa: E402
 from paintbot.mujoco_cell.scene import CONTROL_HZ  # noqa: E402
 
-DOOR_WINDOW = (-0.35, 0.08, 0.35, 0.26)
-
-
-def make_panel(kind: str) -> Panel:
-    if kind == "curved":
-        return Panel(curvature=1.5)
-    p = Panel()
-    if kind == "door":
-        p.add_cutout(*DOOR_WINDOW)
-    return p
 
 
 def print_summary(cell: PaintCell, wall_s: float):
@@ -73,7 +63,8 @@ def spray_cone(viewer, cell: PaintCell, rgba=(1.0, 0.75, 0.3, 0.35), n=12):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--robot", choices=sorted(ROBOTS), default="panda")
-    ap.add_argument("--panel", choices=["flat", "door", "curved"], default="flat")
+    ap.add_argument("--panel", choices=PANEL_KINDS, default="flat",
+                    help="reference panel config (paintbot/cell_layout.py)")
     ap.add_argument("--region", default="full", help='e.g. "upper right"')
     ap.add_argument("--mode", choices=["dynamic", "kinematic"], default="dynamic")
     ap.add_argument("--speed", type=float, default=1.0, help="playback speed multiplier")

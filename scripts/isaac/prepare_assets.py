@@ -1,6 +1,6 @@
 """Build everything the Isaac task loads. Needs mujoco + xacro + usd-core, NOT Isaac.
 
-    python scripts/isaac/prepare_assets.py                  # CRX, all three panels
+    python scripts/isaac/prepare_assets.py                  # CRX, all 8 panel configs
     python scripts/isaac/prepare_assets.py --panels door
 
 Run it on the machine that will run Isaac Sim (the URDF holds absolute mesh paths).

@@ -102,6 +102,26 @@ def test_validation_catches_problems():
     assert set(res.reasons) == {"joint_limit", "depth_nan", "black_frame", "spray_miss"}, res
 
 
+def test_panel_configs():
+    """The 8 reference panels: share one grid, cutouts inside, 7-8 held out, and the
+    scripted expert meets the 0.8 coverage spec on every one (so demos validate)."""
+    from paintbot.cell_layout import HELD_OUT_KINDS, PANEL_CONFIGS, make_panel
+    assert [c.id for c in PANEL_CONFIGS] == list(range(1, 9))
+    assert len({c.name for c in PANEL_CONFIGS}) == 8
+    assert HELD_OUT_KINDS == ("vent", "curved_twin")
+    for c in PANEL_CONFIGS:
+        p = make_panel(c.name)
+        assert (p.nx, p.ny, p.res) == (200, 120, 0.005), c.name
+        for u0, v0, u1, v1 in c.cutouts:
+            assert -0.5 < u0 < u1 < 0.5 and -0.3 < v0 < v1 < 0.3, c.name
+        assert p.paintable.all() == (not c.cutouts)
+        gun = SprayGun()
+        tm = p.region_mask("full")
+        th, dep, emit = simulate(p, gun, RasterPlanner(gun).plan(p, tm))
+        rep = coverage_report(p, th, tm, 50.0, deposited=dep, emitted=emit)
+        assert rep["accept"] and rep["coverage"] > 0.84, (c.name, rep["coverage"])
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

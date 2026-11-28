@@ -50,19 +50,59 @@ LAYOUTS: dict[str, CellLayout] = {
 
 
 DOOR_WINDOW = (-0.35, 0.08, 0.35, 0.26)
-PANEL_KINDS = ("flat", "door", "curved")
+# Two 0.28 x 0.16 m windows, 0.30 m apart. A narrower gap or taller windows drop the
+# scripted expert below the 0.8 coverage spec (window edges get thin coats; see
+# cutout_margin_sigma), so no valid demos could be made.
+TWIN_WINDOWS = ((-0.43, 0.07, -0.15, 0.23), (0.15, 0.07, 0.43, 0.23))
+
+
+@dataclass(frozen=True)
+class PanelConfig:
+    """One reference panel. All are 1.0 x 0.6 m at 5 mm cells, so any mix of them can
+    share one BatchedPaintSim grid; they differ in curvature and cutouts (u0, v0, u1, v1)."""
+    id: int
+    name: str
+    curvature: float = 0.0                # 1/m, cylindrical bend convex to the robot
+    cutouts: tuple = ()
+    held_out: bool = False                # never used for training demos (Phase 3)
+    note: str = ""
+
+
+# Configs 7-8 are held out entirely: an unseen cutout layout (vent + handle) and an
+# unseen curvature with two windows, to test generalization in Phase 6.
+PANEL_CONFIGS: tuple[PanelConfig, ...] = (
+    PanelConfig(1, "flat", note="plain flat panel"),
+    PanelConfig(2, "door", cutouts=(DOOR_WINDOW,), note="flat door, one window"),
+    PanelConfig(3, "curved", curvature=1.5, note="curved door, R = 0.67 m"),
+    PanelConfig(4, "curved_door", curvature=1.5, cutouts=(DOOR_WINDOW,),
+                note="curved door with window"),
+    PanelConfig(5, "gentle_curve", curvature=0.8, cutouts=((-0.40, 0.06, -0.06, 0.24),),
+                note="R = 1.25 m, small window upper left"),
+    PanelConfig(6, "twin_window", cutouts=TWIN_WINDOWS, note="flat, two windows (train-style)"),
+    PanelConfig(7, "vent", cutouts=((-0.30, -0.22, 0.30, -0.12), (0.30, 0.0, 0.40, 0.04)),
+                held_out=True, note="flat, low vent slot + handle recess"),
+    PanelConfig(8, "curved_twin", curvature=1.0, cutouts=TWIN_WINDOWS,
+                held_out=True, note="R = 1.0 m (unseen), two windows"),
+)
+PANEL_KINDS = tuple(c.name for c in PANEL_CONFIGS)
+TRAIN_KINDS = tuple(c.name for c in PANEL_CONFIGS if not c.held_out)
+HELD_OUT_KINDS = tuple(c.name for c in PANEL_CONFIGS if c.held_out)
+
+
+def panel_config(kind: str) -> PanelConfig:
+    for c in PANEL_CONFIGS:
+        if c.name == kind:
+            return c
+    raise ValueError(f"panel kind must be one of {PANEL_KINDS}")
 
 
 def make_panel(kind: str):
-    """The three reference panels: flat, door (flat + window), curved (R = 0.67 m)."""
+    """Build a reference panel by name (see PANEL_CONFIGS)."""
     from .panel import Panel
-    if kind not in PANEL_KINDS:
-        raise ValueError(f"panel kind must be one of {PANEL_KINDS}")
-    if kind == "curved":
-        return Panel(curvature=1.5)
-    p = Panel()
-    if kind == "door":
-        p.add_cutout(*DOOR_WINDOW)
+    c = panel_config(kind)
+    p = Panel(curvature=c.curvature)
+    for cut in c.cutouts:
+        p.add_cutout(*cut)
     return p
 
 

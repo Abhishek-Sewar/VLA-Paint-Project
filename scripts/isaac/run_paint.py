@@ -19,7 +19,9 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-parser.add_argument("--panel", default="door", choices=["flat", "door", "curved"])
+from paintbot.cell_layout import PANEL_KINDS  # noqa: E402  (NumPy only)
+
+parser.add_argument("--panel", default="door", choices=PANEL_KINDS)
 parser.add_argument("--robot", default="crx10ia_l")
 parser.add_argument("--num_envs", type=int, default=16)
 parser.add_argument("--assets", default="outputs/isaac")

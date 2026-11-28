@@ -129,6 +129,7 @@ pip install -e ".[mujoco]"
 python scripts\fetch_menagerie.py --all
 
 python scripts\mujoco_paint.py --robot crx10ia_l --panel curved
+python scripts\mujoco_paint.py --robot crx10ia_l --panel twin_window
 python scripts\mujoco_paint.py --panel curved
 python scripts\mujoco_paint.py --panel door --region "upper right" --speed 2
 :: No window, just metrics + validation
@@ -166,6 +167,29 @@ Measured (dynamic mode, spray on):
 | Panda | Door with window | 0.870 / 0.869 | 4.7 mm / 0.9 mm, 0.2° | pass |
 | Panda | Curved door | 0.982 / 0.982 | 6.0 mm / 1.4 mm, 0.5° | pass |
 
+### Panel configurations
+
+Eight reference panels (`paintbot/cell_layout.py`), all 1.0 x 0.6 m so any mix can
+share one `BatchedPaintSim` grid. Configs 7 and 8 are held out of training entirely
+(Phase 3) to test generalization: an unseen cutout layout and an unseen curvature.
+
+| # | Name | Shape | Expert coverage | Glass overspray |
+|---|---|---|---|---|
+| 1 | `flat` | flat | 0.982 | - |
+| 2 | `door` | flat, one window | 0.869 | 0.283 |
+| 3 | `curved` | R = 0.67 m | 0.982 | - |
+| 4 | `curved_door` | R = 0.67 m, one window | 0.870 | 0.286 |
+| 5 | `gentle_curve` | R = 1.25 m, small window upper left | 0.888 | 0.125 |
+| 6 | `twin_window` | flat, two windows | 0.852 | 0.286 |
+| 7 | `vent` (held out) | flat, low vent slot + handle recess | 0.848 | 0.345 |
+| 8 | `curved_twin` (held out) | R = 1.0 m, two windows | 0.852 | 0.287 |
+
+"Expert coverage" is the scripted planner with no robot. Both robots reproduce it
+within 0.002 in dynamic mode, every config passes validation, and the worst tracking
+error is 8.7 mm (CRX, curved door). The twin windows are sized so the expert stays
+above the 0.8 spec: with the first layout tried (taller windows, 16 cm apart) it
+reached only 0.77, so no valid demos could have been made.
+
 The cell reproduces the planner's limits too: door + `"upper right"` fails
 `low_coverage` (0.743, vs 0.744 with no robot) because that small region borders
 the window, where the planner switches the spray off (see Known limitations).
@@ -186,6 +210,6 @@ Setup and run: [scripts/isaac/README.md](scripts/isaac/README.md).
 
 ## Next steps
 
-Run the Isaac task on AWS and fix what Isaac Lab 3.0 needs, then cameras (RGB + depth),
-8 panel configurations and domain randomization. Policies (Phase 5): ACT/Diffusion
+Run the Isaac task on AWS and fix what Isaac Lab 3.0 needs, then cameras (RGB + depth)
+and domain randomization. Policies (Phase 5): ACT/Diffusion
 baseline, then NVIDIA GR00T N1.6 fine-tuned on the generated demos.
